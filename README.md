@@ -1,4 +1,7 @@
-# Piecewise
+<p align="center">
+  <img width="128" height="128" src="assets/logo.png">
+</p>
+<h1 align="center">Piecewise</h1>
 
 **Piecewise** is a high-performance, open-source Rust library for aggregating trades across multiple EulerSwap pools. It uses a greedy marginal-price equalization algorithm to distribute a trade across several pools, minimizing slippage and maximizing the total output amount.
 
