@@ -1311,14 +1311,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "eulerswap-aggregator"
-version = "0.1.0"
-dependencies = [
- "alloy",
- "serde",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2316,6 +2308,14 @@ dependencies = [
  "memchr",
  "thiserror",
  "ucd-trie",
+]
+
+[[package]]
+name = "piecewise"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "serde",
 ]
 
 [[package]]
