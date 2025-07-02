@@ -1,0 +1,11 @@
+[package]
+name = "eulerswap-aggregator"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+alloy = { version = "1.0.16", features = ["serde"] }
+serde = { version = "1.0.219", features = ["derive"] }
