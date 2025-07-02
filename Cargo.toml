@@ -2,6 +2,13 @@
 name = "piecewise"
 version = "0.1.0"
 edition = "2024"
+authors = ["lumo <lumosan@proton.me>"]
+description = "A high-performance, open-source Rust library for aggregating trades across multiple EulerSwap pools."
+license = "GPL-2.0-or-later"
+repository = "https://github.com/lumosimmo/piecewise"
+homepage = "https://github.com/lumosimmo/piecewise"
+keywords = ["ethereum", "eulerswap", "aggregator", "mev", "wasm"]
+categories = ["cryptography::cryptocurrencies", "wasm"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
