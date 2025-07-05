@@ -235,16 +235,16 @@ mod tests {
         EulerSwapParams {
             vault0: Address::ZERO,
             vault1: Address::ZERO,
-            eulerAccount: Address::ZERO,
-            equilibriumReserve0: eq_reserve_u112,
-            equilibriumReserve1: eq_reserve_u112,
-            priceX: ONE_E18,
-            priceY: ONE_E18,
-            concentrationX: ONE_E18 / U256::from(2), // 0.5
-            concentrationY: ONE_E18 / U256::from(2), // 0.5
+            euler_account: Address::ZERO,
+            equilibrium_reserve0: eq_reserve_u112,
+            equilibrium_reserve1: eq_reserve_u112,
+            price_x: ONE_E18,
+            price_y: ONE_E18,
+            concentration_x: ONE_E18 / U256::from(2), // 0.5
+            concentration_y: ONE_E18 / U256::from(2), // 0.5
             fee: U256::ZERO,
-            protocolFee: U256::ZERO,
-            protocolFeeRecipient: Address::ZERO,
+            protocol_fee: U256::ZERO,
+            protocol_fee_recipient: Address::ZERO,
         }
     }
 
