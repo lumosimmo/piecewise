@@ -61,10 +61,6 @@ pub fn f_inverse(
     y0: U256,
     c: U256,
 ) -> Result<U256, CurveError> {
-    let b: I256;
-    let c_quad: U256;
-    let four_ac: U256;
-
     let term1_unsigned = mul_div_ceil(py * ONE_E18, y - y0, px)?;
     let term1 = I256::from_raw(term1_unsigned); // scale: 1e36
 
@@ -73,9 +69,9 @@ pub fn f_inverse(
     let i_x0 = I256::from_raw(x0);
     let term2 = (I256::from(U256::from(2u64)) * i_c - i_one_e18) * i_x0; // scale: 1e36
 
-    b = (term1 - term2) / i_one_e18; // scale: 1e18
-    c_quad = mul_div_ceil(ONE_E18 - c, x0 * x0, ONE_E18)?; // scale: 1e36
-    four_ac = mul_div_ceil(U256::from(4) * c, c_quad, ONE_E18)?; // scale: 1e36
+    let b: I256 = (term1 - term2) / i_one_e18; // scale: 1e18
+    let c_quad: U256 = mul_div_ceil(ONE_E18 - c, x0 * x0, ONE_E18)?; // scale: 1e36
+    let four_ac: U256 = mul_div_ceil(U256::from(4) * c, c_quad, ONE_E18)?; // scale: 1e36
 
     let abs_b = b.abs().into_raw();
     let squared_b: U256;
@@ -96,12 +92,11 @@ pub fn f_inverse(
         sqrt *= scale;
     }
 
-    let x: U256;
-    if b.is_negative() || b.is_zero() {
-        x = mul_div_ceil(abs_b + sqrt, ONE_E18, U256::from(2) * c)? + U256::ONE;
+    let x: U256 = if b.is_negative() || b.is_zero() {
+        mul_div_ceil(abs_b + sqrt, ONE_E18, U256::from(2) * c)? + U256::ONE
     } else {
-        x = ceil_div(U256::from(2) * c_quad, abs_b + sqrt)? + U256::ONE;
-    }
+        ceil_div(U256::from(2) * c_quad, abs_b + sqrt)? + U256::ONE
+    };
 
     if x >= x0 { Ok(x0) } else { Ok(x) }
 }
@@ -133,11 +128,7 @@ pub fn df_dx_ray(x: U256, px: U256, py: U256, x0: U256, cx: U256) -> Result<U256
 ///
 /// This is a utility function used by `f_inverse` when calculating the discriminant.
 fn compute_scale(x: U256) -> Result<U256, CurveError> {
-    let bits = if x.is_zero() {
-        0
-    } else {
-        x.log2() as usize + 1
-    };
+    let bits = if x.is_zero() { 0 } else { x.log2() + 1 };
 
     if bits > 128 {
         let excess_bits = bits - 128;
