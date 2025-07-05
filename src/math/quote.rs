@@ -1,5 +1,5 @@
 use crate::math::curve::{CurveError, EulerSwapParams, f, f_inverse};
-use alloy::primitives::U256;
+use alloy_primitives::U256;
 
 /// Calculates the output amount for a swap, given an input amount and the pool state.
 pub fn find_curve_point(
@@ -10,12 +10,12 @@ pub fn find_curve_point(
     reserve0: U256,
     reserve1: U256,
 ) -> Result<U256, CurveError> {
-    let px = p.price_x();
-    let py = p.price_y();
-    let x0 = U256::from(p.equilibrium_reserve0());
-    let y0 = U256::from(p.equilibrium_reserve1());
-    let cx = p.concentration_x();
-    let cy = p.concentration_y();
+    let px = p.price_x;
+    let py = p.price_y;
+    let x0 = U256::from(p.equilibrium_reserve0);
+    let y0 = U256::from(p.equilibrium_reserve1);
+    let cx = p.concentration_x;
+    let cy = p.concentration_y;
 
     if exact_in {
         if token0_is_input {

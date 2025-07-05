@@ -1,4 +1,4 @@
-use alloy::primitives::U256;
+use alloy_primitives::U256;
 
 use crate::math::common::{ONE_E36, ceil_div};
 use crate::math::curve::{CurveError, get_current_price, get_current_reserves};
@@ -6,6 +6,10 @@ use crate::math::quote::find_curve_point;
 use crate::solver::common::{
     ExactInSwapRequest, ExactInSwapResult, PoolSnapshot, RouteError, SwapAllocation,
 };
+#[cfg(target_arch = "wasm32")]
+use serde_wasm_bindgen::{Error, from_value, to_value};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
 
 /// Normalized per-pool state used during the greedy filling loop.
 #[derive(Clone, Debug)]
@@ -32,8 +36,8 @@ impl RoutePool {
     /// Constructs a direction-normalized `RoutePool` from a raw snapshot and a `(token_in,token_out)` pair.
     fn try_new(
         snap: PoolSnapshot,
-        token_in: &alloy::primitives::Address,
-        token_out: &alloy::primitives::Address,
+        token_in: &alloy_primitives::Address,
+        token_out: &alloy_primitives::Address,
     ) -> Result<Self, RouteError> {
         // Determine if this pool can service the swap and in which orientation.
         let token0_is_input: bool;
@@ -225,7 +229,7 @@ mod tests {
     use super::*;
     use crate::math::common::ONE_E18;
     use crate::math::curve::{EulerSwapParams, get_current_price};
-    use alloy::primitives::{Address, aliases::U112};
+    use alloy_primitives::{Address, aliases::U112};
 
     fn create_test_params() -> EulerSwapParams {
         let eq_reserve = U256::from(100) * ONE_E18;
@@ -235,16 +239,16 @@ mod tests {
         EulerSwapParams {
             vault0: Address::ZERO,
             vault1: Address::ZERO,
-            eulerAccount: Address::ZERO,
-            equilibriumReserve0: eq_reserve_u112,
-            equilibriumReserve1: eq_reserve_u112,
-            priceX: ONE_E18,
-            priceY: ONE_E18,
-            concentrationX: ONE_E18 / U256::from(2), // 0.5
-            concentrationY: ONE_E18 / U256::from(2), // 0.5
+            euler_account: Address::ZERO,
+            equilibrium_reserve0: eq_reserve_u112,
+            equilibrium_reserve1: eq_reserve_u112,
+            price_x: ONE_E18,
+            price_y: ONE_E18,
+            concentration_x: ONE_E18 / U256::from(2), // 0.5
+            concentration_y: ONE_E18 / U256::from(2), // 0.5
             fee: U256::ZERO,
-            protocolFee: U256::ZERO,
-            protocolFeeRecipient: Address::ZERO,
+            protocol_fee: U256::ZERO,
+            protocol_fee_recipient: Address::ZERO,
         }
     }
 
@@ -311,4 +315,15 @@ mod tests {
         assert_eq!(result.allocations[0].amount_in, U256::from(10) * ONE_E18);
         assert!(result.total_out > U256::ZERO);
     }
+}
+
+// WASM wrapper functions
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn wasm_find_best_route_exact_in(pools: JsValue, request: JsValue) -> Result<JsValue, Error> {
+    let pools: Vec<PoolSnapshot> = from_value(pools)?;
+    let request: ExactInSwapRequest = from_value(request)?;
+
+    let result = find_best_route_exact_in(&pools, &request)?;
+    to_value(&result)
 }

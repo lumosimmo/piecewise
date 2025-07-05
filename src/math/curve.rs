@@ -2,29 +2,27 @@ use crate::math::common::{
     MathError, ONE_E9, ONE_E18, ONE_E27, ONE_E36, ONE_E54, U248_MAX, ceil_div, delta_ratio,
     mul_div_ceil, sqrt_ceil,
 };
-use alloy::primitives::{Address, I256, U256, aliases::U112};
-use alloy::sol;
-use std::fmt;
+use alloy_primitives::{Address, I256, U256, aliases::U112};
+use serde::{Deserialize, Serialize};
 
-sol! {
-    /// The IEulerSwap.Params struct from the Solidity code.
-    struct EulerSwapParams {
-        address vault0;
-        address vault1;
-        address eulerAccount;
-        uint112 equilibriumReserve0;
-        uint112 equilibriumReserve1;
-        uint256 priceX;
-        uint256 priceY;
-        uint256 concentrationX;
-        uint256 concentrationY;
-        uint256 fee;
-        uint256 protocolFee;
-        address protocolFeeRecipient;
-    }
+/// Parameters for the EulerSwap pool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EulerSwapParams {
+    pub vault0: Address,
+    pub vault1: Address,
+    pub euler_account: Address,
+    pub equilibrium_reserve0: U112,
+    pub equilibrium_reserve1: U112,
+    pub price_x: U256,
+    pub price_y: U256,
+    pub concentration_x: U256,
+    pub concentration_y: U256,
+    pub fee: U256,
+    pub protocol_fee: U256,
+    pub protocol_fee_recipient: Address,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum CurveError {
     Math(MathError),
     PriceBelowApex,
@@ -34,76 +32,6 @@ pub enum CurveError {
 impl From<MathError> for CurveError {
     fn from(e: MathError) -> Self {
         CurveError::Math(e)
-    }
-}
-
-impl fmt::Debug for EulerSwapParams {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EulerSwapParams")
-            .field("vault0", &self.vault0)
-            .field("vault1", &self.vault1)
-            .field("eulerAccount", &self.eulerAccount)
-            .field("equilibriumReserve0", &self.equilibriumReserve0)
-            .field("equilibriumReserve1", &self.equilibriumReserve1)
-            .field("priceX", &self.priceX)
-            .field("priceY", &self.priceY)
-            .field("concentrationX", &self.concentrationX)
-            .field("concentrationY", &self.concentrationY)
-            .field("fee", &self.fee)
-            .field("protocolFee", &self.protocolFee)
-            .field("protocolFeeRecipient", &self.protocolFeeRecipient)
-            .finish()
-    }
-}
-
-/// Snake case getters for the EulerSwapParams struct because it looks better.
-impl EulerSwapParams {
-    pub fn vault0(&self) -> Address {
-        self.vault0
-    }
-
-    pub fn vault1(&self) -> Address {
-        self.vault1
-    }
-
-    pub fn euler_account(&self) -> Address {
-        self.eulerAccount
-    }
-
-    pub fn equilibrium_reserve0(&self) -> U112 {
-        self.equilibriumReserve0
-    }
-
-    pub fn equilibrium_reserve1(&self) -> U112 {
-        self.equilibriumReserve1
-    }
-
-    pub fn price_x(&self) -> U256 {
-        self.priceX
-    }
-
-    pub fn price_y(&self) -> U256 {
-        self.priceY
-    }
-
-    pub fn concentration_x(&self) -> U256 {
-        self.concentrationX
-    }
-
-    pub fn concentration_y(&self) -> U256 {
-        self.concentrationY
-    }
-
-    pub fn fee(&self) -> U256 {
-        self.fee
-    }
-
-    pub fn protocol_fee(&self) -> U256 {
-        self.protocolFee
-    }
-
-    pub fn protocol_fee_recipient(&self) -> Address {
-        self.protocolFeeRecipient
     }
 }
 
@@ -230,8 +158,8 @@ pub fn verify(
         return Ok(false);
     }
 
-    let equilibrium_reserve0 = U256::from(p.equilibrium_reserve0());
-    let equilibrium_reserve1 = U256::from(p.equilibrium_reserve1());
+    let equilibrium_reserve0 = U256::from(p.equilibrium_reserve0);
+    let equilibrium_reserve1 = U256::from(p.equilibrium_reserve1);
 
     if new_reserve0 >= equilibrium_reserve0 {
         if new_reserve1 >= equilibrium_reserve1 {
@@ -240,11 +168,11 @@ pub fn verify(
         Ok(new_reserve0
             >= f(
                 new_reserve1,
-                p.price_y(),
-                p.price_x(),
+                p.price_y,
+                p.price_x,
                 equilibrium_reserve1,
                 equilibrium_reserve0,
-                p.concentration_y(),
+                p.concentration_y,
             )?)
     } else {
         if new_reserve1 < equilibrium_reserve1 {
@@ -253,11 +181,11 @@ pub fn verify(
         Ok(new_reserve1
             >= f(
                 new_reserve0,
-                p.price_x(),
-                p.price_y(),
+                p.price_x,
+                p.price_y,
                 equilibrium_reserve0,
                 equilibrium_reserve1,
-                p.concentration_x(),
+                p.concentration_x,
             )?)
     }
 }
@@ -268,63 +196,67 @@ pub fn get_current_price(
     reserve0: U256,
     reserve1: U256,
 ) -> Result<U256, CurveError> {
-    let equilibrium_reserve0 = U256::from(p.equilibrium_reserve0());
-    let equilibrium_reserve1 = U256::from(p.equilibrium_reserve1());
+    let equilibrium_reserve0 = U256::from(p.equilibrium_reserve0);
+    let equilibrium_reserve1 = U256::from(p.equilibrium_reserve1);
 
     if reserve0 <= equilibrium_reserve0 {
         // We are on or to the left of the apex -> slope directly gives X‑price.
         if reserve0 == equilibrium_reserve0 {
-            return Ok(mul_div_ceil(p.price_x(), ONE_E18, p.price_y())?);
+            return Ok(mul_div_ceil(p.price_x, ONE_E18, p.price_y)?);
         }
         df_dx(
             reserve0,
-            p.price_x(),
-            p.price_y(),
+            p.price_x,
+            p.price_y,
             equilibrium_reserve0,
-            p.concentration_x(),
+            p.concentration_x,
         )
     } else {
         // If on the right branch, derive the slope in Y‑space and invert.
         if reserve1 == equilibrium_reserve1 {
-            return Ok(mul_div_ceil(p.price_y(), ONE_E18, p.price_x())?);
+            return Ok(mul_div_ceil(p.price_y, ONE_E18, p.price_x)?);
         }
         let price = df_dx(
             reserve1,
-            p.price_y(),
-            p.price_x(),
+            p.price_y,
+            p.price_x,
             equilibrium_reserve1,
-            p.concentration_y(),
+            p.concentration_y,
         )?;
         Ok(ceil_div(ONE_E36, price)?) // reciprocal because dx/dy = 1/(dy/dx)
     }
 }
 
 /// Computes the marginal price at the given reserve vector, in RAY precision.
-pub fn get_current_price_ray(p: &EulerSwapParams, reserve0: U256, reserve1: U256) -> Result<U256, CurveError> {
-    let equilibrium_reserve0 = U256::from(p.equilibrium_reserve0());
-    let equilibrium_reserve1 = U256::from(p.equilibrium_reserve1());
+pub fn get_current_price_ray(
+    p: &EulerSwapParams,
+    reserve0: U256,
+    reserve1: U256,
+) -> Result<U256, CurveError> {
+    let equilibrium_reserve0 = U256::from(p.equilibrium_reserve0);
+    let equilibrium_reserve1 = U256::from(p.equilibrium_reserve1);
 
     if reserve0 <= equilibrium_reserve0 {
         if reserve0 == equilibrium_reserve0 {
-            return Ok(mul_div_ceil(p.price_x(), ONE_E27, p.price_y())?);
+            return Ok(mul_div_ceil(p.price_x, ONE_E27, p.price_y)?);
         }
         df_dx_ray(
             reserve0,
-            p.price_x(),
-            p.price_y(),
+            p.price_x,
+            p.price_y,
             equilibrium_reserve0,
-            p.concentration_x(),
+            p.concentration_x,
         )
     } else {
         if reserve1 == equilibrium_reserve1 {
-            return Ok(mul_div_ceil(p.price_y(), ONE_E27, p.price_x())?);
+            return Ok(mul_div_ceil(p.price_y, ONE_E27, p.price_x)?);
         }
         let price = df_dx_ray(
             reserve1,
-            p.price_y(),
-            p.price_x(),
+            p.price_y,
+            p.price_x,
             equilibrium_reserve1,
-            p.concentration_y(),
+            p.concentration_y,
         )?;
         Ok(ceil_div(ONE_E54, price)?)
     }
@@ -336,12 +268,12 @@ pub fn get_current_reserves(
     p: &EulerSwapParams,
     current_price: U256,
 ) -> Result<(U256, U256), CurveError> {
-    let px = p.price_x();
-    let py = p.price_y();
-    let x0 = U256::from(p.equilibrium_reserve0());
-    let y0 = U256::from(p.equilibrium_reserve1());
-    let cx = p.concentration_x();
-    let cy = p.concentration_y();
+    let px = p.price_x;
+    let py = p.price_y;
+    let x0 = U256::from(p.equilibrium_reserve0);
+    let y0 = U256::from(p.equilibrium_reserve1);
+    let cx = p.concentration_x;
+    let cy = p.concentration_y;
 
     let apex_price = mul_div_ceil(px, ONE_E18, py)?;
     if current_price < apex_price {
@@ -424,12 +356,12 @@ pub fn get_current_reserves_ray(
     p: &EulerSwapParams,
     current_price_ray: U256,
 ) -> Result<(U256, U256), CurveError> {
-    let px = p.price_x();
-    let py = p.price_y();
-    let x0 = U256::from(p.equilibrium_reserve0());
-    let y0 = U256::from(p.equilibrium_reserve1());
-    let cx = p.concentration_x();
-    let cy = p.concentration_y();
+    let px = p.price_x;
+    let py = p.price_y;
+    let x0 = U256::from(p.equilibrium_reserve0);
+    let y0 = U256::from(p.equilibrium_reserve1);
+    let cx = p.concentration_x;
+    let cy = p.concentration_y;
 
     let apex_price = mul_div_ceil(px, ONE_E27, py)?;
     if current_price_ray < apex_price {
@@ -511,7 +443,7 @@ pub fn get_current_reserves_ray(
 mod tests {
     use super::*;
     use crate::math::common::{ONE_E18, ONE_E27, ONE_E54};
-    use alloy::primitives::{uint, U256};
+    use alloy_primitives::{U256, uint};
     use std::str::FromStr;
 
     #[test]
@@ -615,25 +547,27 @@ mod tests {
         let params = EulerSwapParams {
             vault0: Address::ZERO,
             vault1: Address::ZERO,
-            eulerAccount: Address::ZERO,
-            equilibriumReserve0: eq_reserve_u112,
-            equilibriumReserve1: eq_reserve_u112,
-            priceX: ONE_E18,
-            priceY: ONE_E18,
-            concentrationX: ONE_E18,
-            concentrationY: ONE_E18,
+            euler_account: Address::ZERO,
+            equilibrium_reserve0: eq_reserve_u112,
+            equilibrium_reserve1: eq_reserve_u112,
+            price_x: ONE_E18,
+            price_y: ONE_E18,
+            concentration_x: ONE_E18,
+            concentration_y: ONE_E18,
             fee: U256::ZERO,
-            protocolFee: U256::ZERO,
-            protocolFeeRecipient: Address::ZERO,
+            protocol_fee: U256::ZERO,
+            protocol_fee_recipient: Address::ZERO,
         };
 
         // Case 1: new reserves are above equilibrium
-        assert!(verify(
-            &params,
-            eq_reserve_u256 + U256::from(1),
-            eq_reserve_u256 + U256::from(1)
-        )
-        .unwrap());
+        assert!(
+            verify(
+                &params,
+                eq_reserve_u256 + U256::from(1),
+                eq_reserve_u256 + U256::from(1)
+            )
+            .unwrap()
+        );
 
         // Case 2: new_reserve0 >= eq0, new_reserve1 < eq1.
         // This case checks new_reserve0 >= f(new_reserve1, ...)
@@ -641,47 +575,22 @@ mod tests {
         let reserve1_case2 = U256::from(90) * ONE_E18; // 110+90 = 200, so it's on the curve.
         assert!(verify(&params, reserve0_case2, reserve1_case2).unwrap());
         // Point below the curve
-        assert!(!verify(
-            &params,
-            reserve0_case2 - U256::from(1),
-            reserve1_case2
-        )
-        .unwrap());
+        assert!(!verify(&params, reserve0_case2 - U256::from(1), reserve1_case2).unwrap());
         // Point above the curve
-        assert!(verify(
-            &params,
-            reserve0_case2 + U256::from(1),
-            reserve1_case2
-        )
-        .unwrap());
+        assert!(verify(&params, reserve0_case2 + U256::from(1), reserve1_case2).unwrap());
 
         // Case 3: new_reserve0 < eq0.
         // Must have new_reserve1 >= eq1 to proceed, otherwise false.
-        assert!(!verify(
-            &params,
-            U256::from(90) * ONE_E18,
-            U256::from(90) * ONE_E18
-        )
-        .unwrap());
+        assert!(!verify(&params, U256::from(90) * ONE_E18, U256::from(90) * ONE_E18).unwrap());
 
         // This case checks new_reserve1 >= f(new_reserve0, ...)
         let reserve0_case3 = U256::from(90) * ONE_E18;
         let reserve1_case3 = U256::from(110) * ONE_E18; // 90+110 = 200, so it's on the curve.
         assert!(verify(&params, reserve0_case3, reserve1_case3).unwrap());
         // Point below the curve
-        assert!(!verify(
-            &params,
-            reserve0_case3,
-            reserve1_case3 - U256::from(1)
-        )
-        .unwrap());
+        assert!(!verify(&params, reserve0_case3, reserve1_case3 - U256::from(1)).unwrap());
         // Point above the curve
-        assert!(verify(
-            &params,
-            reserve0_case3,
-            reserve1_case3 + U256::from(1)
-        )
-        .unwrap());
+        assert!(verify(&params, reserve0_case3, reserve1_case3 + U256::from(1)).unwrap());
 
         // Case 4: reserves exceed U112::MAX
         let large_reserve = U256::from(U112::MAX) + U256::from(1);
@@ -697,16 +606,16 @@ mod tests {
         let params = EulerSwapParams {
             vault0: Address::ZERO,
             vault1: Address::ZERO,
-            eulerAccount: Address::ZERO,
-            equilibriumReserve0: eq_reserve_u112,
-            equilibriumReserve1: eq_reserve_u112,
-            priceX: U256::from(2) * ONE_E18,
-            priceY: U256::from(1) * ONE_E18,
-            concentrationX: ONE_E18 / U256::from(10), // 0.1
-            concentrationY: ONE_E18 / U256::from(5),  // 0.2
+            euler_account: Address::ZERO,
+            equilibrium_reserve0: eq_reserve_u112,
+            equilibrium_reserve1: eq_reserve_u112,
+            price_x: U256::from(2) * ONE_E18,
+            price_y: U256::from(1) * ONE_E18,
+            concentration_x: ONE_E18 / U256::from(10), // 0.1
+            concentration_y: ONE_E18 / U256::from(5),  // 0.2
             fee: U256::ZERO,
-            protocolFee: U256::ZERO,
-            protocolFeeRecipient: Address::ZERO,
+            protocol_fee: U256::ZERO,
+            protocol_fee_recipient: Address::ZERO,
         };
 
         // Case 1: reserve0 < equilibrium_reserve0
@@ -714,17 +623,17 @@ mod tests {
         let price_left = get_current_price(&params, reserve0_left, U256::ZERO).unwrap();
         let expected_price_left = df_dx(
             reserve0_left,
-            params.priceX,
-            params.priceY,
+            params.price_x,
+            params.price_y,
             eq_reserve_u256,
-            params.concentrationX,
+            params.concentration_x,
         )
         .unwrap();
         assert_eq!(price_left, expected_price_left);
 
         // Case 2: reserve0 == equilibrium_reserve0
         let price_eq = get_current_price(&params, eq_reserve_u256, eq_reserve_u256).unwrap();
-        let expected_price_eq = mul_div_ceil(params.priceX, ONE_E18, params.priceY).unwrap();
+        let expected_price_eq = mul_div_ceil(params.price_x, ONE_E18, params.price_y).unwrap();
         assert_eq!(price_eq, expected_price_eq);
 
         // Case 3: reserve0 > equilibrium_reserve0
@@ -733,10 +642,10 @@ mod tests {
             get_current_price(&params, eq_reserve_u256 + U256::from(1), reserve1_right).unwrap();
         let df_dx_right = df_dx(
             reserve1_right,
-            params.priceY,
-            params.priceX,
+            params.price_y,
+            params.price_x,
             eq_reserve_u256,
-            params.concentrationY,
+            params.concentration_y,
         )
         .unwrap();
         let expected_price_right = ceil_div(ONE_E36, df_dx_right).unwrap();
@@ -746,7 +655,7 @@ mod tests {
         let price_eq_right =
             get_current_price(&params, eq_reserve_u256 + U256::from(1), eq_reserve_u256).unwrap();
         let expected_price_eq_right =
-            mul_div_ceil(params.priceY, ONE_E18, params.priceX).unwrap();
+            mul_div_ceil(params.price_y, ONE_E18, params.price_x).unwrap();
         assert_eq!(price_eq_right, expected_price_eq_right);
     }
 
@@ -758,16 +667,16 @@ mod tests {
         let params = EulerSwapParams {
             vault0: Address::ZERO,
             vault1: Address::ZERO,
-            eulerAccount: Address::ZERO,
-            equilibriumReserve0: eq_reserve_u112,
-            equilibriumReserve1: eq_reserve_u112,
-            priceX: U256::from(2) * ONE_E18,
-            priceY: U256::from(1) * ONE_E18,
-            concentrationX: ONE_E18 / U256::from(10), // 0.1
-            concentrationY: ONE_E18 / U256::from(5),  // 0.2
+            euler_account: Address::ZERO,
+            equilibrium_reserve0: eq_reserve_u112,
+            equilibrium_reserve1: eq_reserve_u112,
+            price_x: U256::from(2) * ONE_E18,
+            price_y: U256::from(1) * ONE_E18,
+            concentration_x: ONE_E18 / U256::from(10), // 0.1
+            concentration_y: ONE_E18 / U256::from(5),  // 0.2
             fee: U256::ZERO,
-            protocolFee: U256::ZERO,
-            protocolFeeRecipient: Address::ZERO,
+            protocol_fee: U256::ZERO,
+            protocol_fee_recipient: Address::ZERO,
         };
 
         // Case 1: reserve0 < equilibrium_reserve0
@@ -775,17 +684,17 @@ mod tests {
         let price_left = get_current_price_ray(&params, reserve0_left, U256::ZERO).unwrap();
         let expected_price_left = df_dx_ray(
             reserve0_left,
-            params.priceX,
-            params.priceY,
+            params.price_x,
+            params.price_y,
             eq_reserve_u256,
-            params.concentrationX,
+            params.concentration_x,
         )
         .unwrap();
         assert_eq!(price_left, expected_price_left);
 
         // Case 2: reserve0 == equilibrium_reserve0
         let price_eq = get_current_price_ray(&params, eq_reserve_u256, eq_reserve_u256).unwrap();
-        let expected_price_eq = mul_div_ceil(params.priceX, ONE_E27, params.priceY).unwrap();
+        let expected_price_eq = mul_div_ceil(params.price_x, ONE_E27, params.price_y).unwrap();
         assert_eq!(price_eq, expected_price_eq);
 
         // Case 3: reserve0 > equilibrium_reserve0
@@ -795,10 +704,10 @@ mod tests {
                 .unwrap();
         let df_dx_right = df_dx_ray(
             reserve1_right,
-            params.priceY,
-            params.priceX,
+            params.price_y,
+            params.price_x,
             eq_reserve_u256,
-            params.concentrationY,
+            params.concentration_y,
         )
         .unwrap();
         let expected_price_right = ceil_div(ONE_E54, df_dx_right).unwrap();
@@ -809,7 +718,7 @@ mod tests {
             get_current_price_ray(&params, eq_reserve_u256 + U256::from(1), eq_reserve_u256)
                 .unwrap();
         let expected_price_eq_right =
-            mul_div_ceil(params.priceY, ONE_E27, params.priceX).unwrap();
+            mul_div_ceil(params.price_y, ONE_E27, params.price_x).unwrap();
         assert_eq!(price_eq_right, expected_price_eq_right);
     }
 }
