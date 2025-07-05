@@ -2,7 +2,7 @@ use crate::math::common::{
     MathError, ONE_E9, ONE_E18, ONE_E27, ONE_E36, ONE_E54, U248_MAX, ceil_div, delta_ratio,
     mul_div_ceil, sqrt_ceil,
 };
-use alloy::primitives::{Address, I256, U256, aliases::U112};
+use alloy_primitives::{Address, I256, U256, aliases::U112};
 use serde::{Deserialize, Serialize};
 
 /// Parameters for the EulerSwap pool.
@@ -22,7 +22,7 @@ pub struct EulerSwapParams {
     pub protocol_fee_recipient: Address,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum CurveError {
     Math(MathError),
     PriceBelowApex,
@@ -443,7 +443,7 @@ pub fn get_current_reserves_ray(
 mod tests {
     use super::*;
     use crate::math::common::{ONE_E18, ONE_E27, ONE_E54};
-    use alloy::primitives::{U256, uint};
+    use alloy_primitives::{U256, uint};
     use std::str::FromStr;
 
     #[test]
@@ -654,7 +654,8 @@ mod tests {
         // Case 4: reserve1 == equilibrium_reserve1 (on right side)
         let price_eq_right =
             get_current_price(&params, eq_reserve_u256 + U256::from(1), eq_reserve_u256).unwrap();
-        let expected_price_eq_right = mul_div_ceil(params.price_y, ONE_E18, params.price_x).unwrap();
+        let expected_price_eq_right =
+            mul_div_ceil(params.price_y, ONE_E18, params.price_x).unwrap();
         assert_eq!(price_eq_right, expected_price_eq_right);
     }
 
@@ -716,7 +717,8 @@ mod tests {
         let price_eq_right =
             get_current_price_ray(&params, eq_reserve_u256 + U256::from(1), eq_reserve_u256)
                 .unwrap();
-        let expected_price_eq_right = mul_div_ceil(params.price_y, ONE_E27, params.price_x).unwrap();
+        let expected_price_eq_right =
+            mul_div_ceil(params.price_y, ONE_E27, params.price_x).unwrap();
         assert_eq!(price_eq_right, expected_price_eq_right);
     }
 }

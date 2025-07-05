@@ -1,5 +1,5 @@
 use crate::math::curve::{CurveError, EulerSwapParams, f, f_inverse};
-use alloy::primitives::U256;
+use alloy_primitives::U256;
 
 /// Calculates the output amount for a swap, given an input amount and the pool state.
 pub fn find_curve_point(

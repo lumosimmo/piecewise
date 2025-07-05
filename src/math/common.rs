@@ -1,4 +1,5 @@
-use alloy::primitives::{U256, U512, uint};
+use alloy_primitives::{U256, U512, uint};
+use serde::{Deserialize, Serialize};
 
 pub const ONE_E18: U256 = uint!(1000000000000000000_U256);
 pub const ONE_E27: U256 = uint!(1000000000000000000000000000_U256);
@@ -8,7 +9,7 @@ pub const ONE_E54: U256 = uint!(100000000000000000000000000000000000000000000000
 /// 2^248 - 1
 pub const U248_MAX: U256 = U256::from_limbs([u64::MAX, u64::MAX, u64::MAX, 0x00ff_ffff_ffff_ffff]);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub enum MathError {
     DivisionByZero,
     Overflow,
@@ -109,7 +110,7 @@ pub fn delta_ratio(left: U256, right: U256, precision: U256) -> Result<U256, Mat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::primitives::U256;
+    use alloy_primitives::U256;
     use std::str::FromStr;
 
     #[test]
