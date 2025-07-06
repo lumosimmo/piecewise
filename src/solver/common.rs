@@ -19,11 +19,6 @@ pub struct ExactInSwapRequest {
     pub token_in: Address,
     pub token_out: Address,
     pub amount_in: U256,
-    #[cfg_attr(
-        target_arch = "wasm32",
-        serde(serialize_with = "crate::wasm_serde::serialize_usize")
-    )]
-    pub max_splits: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,7 +30,7 @@ pub struct SwapAllocation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExactInSwapResult {
     pub total_out: U256,
-    pub allocations: Vec<SwapAllocation>, // guaranteed ≤ max_splits
+    pub allocations: Vec<SwapAllocation>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -44,8 +39,6 @@ pub enum RouteError {
     NoViablePool,
     /// amount_in == 0
     AmountTooSmall,
-    /// max_splits == 0
-    SplitsLimitTooLow,
     /// The math failed (e.g., EulerSwap helper returned Err).
     ComputationFailed(CurveError),
 }
