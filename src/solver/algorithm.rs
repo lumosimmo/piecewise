@@ -1,8 +1,8 @@
 use alloy_primitives::U256;
+use std::collections::HashSet;
 
-use crate::math::common::{ONE_E36, ceil_div};
-use crate::math::curve::{CurveError, get_current_price, get_current_reserves};
-use crate::math::quote::find_curve_point;
+use crate::math::curve::{get_current_price, get_current_reserves};
+use crate::math::quote::{compute_quote, find_reserve0_for_reserve1, find_reserve1_for_reserve0};
 use crate::solver::common::{
     ExactInSwapRequest, ExactInSwapResult, PoolSnapshot, RouteError, SwapAllocation,
 };
@@ -11,7 +11,7 @@ use serde_wasm_bindgen::{Error, from_value, to_value};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-/// Normalized per-pool state used during the greedy filling loop.
+/// Per-pool state used during the greedy filling loop.
 #[derive(Clone, Debug)]
 struct RoutePool {
     /// Immutable starting snapshot (unchanged during simulation).
@@ -21,8 +21,7 @@ struct RoutePool {
     reserve0: U256,
     reserve1: U256,
 
-    /// Normalized marginal price – *output per input* – always scaled 18 decimals and
-    /// **higher is better**, regardless of swap direction.
+    /// Marginal price of the pool. When token0 is input, higher is better. When token0 is output, lower is better.
     price: U256,
 
     /// Cumulative input already assigned to this pool during the simulation.
@@ -33,7 +32,7 @@ struct RoutePool {
 }
 
 impl RoutePool {
-    /// Constructs a direction-normalized `RoutePool` from a raw snapshot and a `(token_in,token_out)` pair.
+    /// Constructs a `RoutePool` from a raw snapshot and a `(token_in,token_out)` pair.
     fn try_new(
         snap: PoolSnapshot,
         token_in: &alloy_primitives::Address,
@@ -50,17 +49,10 @@ impl RoutePool {
             return Err(RouteError::NoViablePool);
         }
 
-        let raw_price = get_current_price(&snap.params, snap.reserve0, snap.reserve1)?;
+        let price = get_current_price(&snap.params, snap.reserve0, snap.reserve1)?;
 
         let reserve0 = snap.reserve0;
         let reserve1 = snap.reserve1;
-
-        // Normalize so that `price` is **out per in** and higher is better.
-        let price = if token0_is_input {
-            raw_price
-        } else {
-            ceil_div(ONE_E36, raw_price)?
-        };
 
         Ok(Self {
             snapshot: snap,
@@ -73,7 +65,7 @@ impl RoutePool {
     }
 }
 
-/// Greedy marginal-price equalization for finding the best route.
+/// Greedy marginal-price equalization and chunk-filling for finding the best route.
 pub fn find_best_route_exact_in(
     pools: &[PoolSnapshot],
     request: &ExactInSwapRequest,
@@ -81,67 +73,178 @@ pub fn find_best_route_exact_in(
     if request.amount_in.is_zero() {
         return Err(RouteError::AmountTooSmall);
     }
-    if request.max_splits == 0 {
-        return Err(RouteError::SplitsLimitTooLow);
-    }
 
     let mut candidates: Vec<RoutePool> = pools
         .iter()
         .filter_map(|p| RoutePool::try_new(p.clone(), &request.token_in, &request.token_out).ok())
         .collect();
 
+    candidates.retain(|pool| {
+        if pool.token0_is_input {
+            !pool.reserve1.is_zero()
+        } else {
+            !pool.reserve0.is_zero()
+        }
+    });
+
     if candidates.is_empty() {
         return Err(RouteError::NoViablePool);
     }
 
-    candidates.sort_by(|a, b| b.price.cmp(&a.price));
-    if candidates.len() > request.max_splits {
-        candidates.truncate(request.max_splits);
-    }
+    // Sort candidates by best marginal price
+    // When token0 is input, we want lower prices (cheaper to buy token1) and vice versa
+    candidates.sort_by(|a, b| {
+        if a.token0_is_input {
+            b.price.cmp(&a.price)
+        } else {
+            a.price.cmp(&b.price)
+        }
+    });
 
     let mut remaining_in = request.amount_in;
+    let mut equalized_pools: usize = 1;
+    let mut dead_pools: HashSet<usize> = HashSet::new();
+    let mut liquid_pools: HashSet<usize> = HashSet::new();
 
-    while !remaining_in.is_zero() {
-        let (best_idx, _) = candidates
-            .iter()
-            .enumerate()
-            .max_by(|(_, a), (_, b)| a.price.cmp(&b.price))
-            .expect("[find_best_route_exact_in] candidate list should not be empty");
-        let best_price = candidates[best_idx].price;
-
-        // If only one pool or everyone tied, dump remainder into best and break
-        let second_price_opt = candidates
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| *i != best_idx)
-            .map(|(_, p)| p.price)
-            .max();
-        if second_price_opt.is_none() || best_price == second_price_opt.unwrap() {
-            candidates[best_idx].allocated_in += remaining_in;
-            // Skip reserve updates and price recompute because we're exiting
-            break;
-        }
-
-        let target_price = second_price_opt.unwrap();
-        match compute_delta_to_target_price(&mut candidates[best_idx], target_price) {
-            Ok(delta_in) => {
-                if delta_in >= remaining_in {
-                    candidates[best_idx].allocated_in += remaining_in;
-                    remaining_in = U256::ZERO;
-                } else {
-                    candidates[best_idx].allocated_in += delta_in;
-                    remaining_in -= delta_in;
-                }
+    // Marginal-price equalization
+    while equalized_pools < candidates.len() && remaining_in > U256::ZERO {
+        for i in 0..equalized_pools {
+            if dead_pools.contains(&i) || dead_pools.contains(&equalized_pools) {
+                continue;
             }
-            Err(e) => {
-                // If the math fails, we pour all remaining input into the best pool and exit
-                eprintln!(
-                    "[find_best_route_exact_in] delta-solve failed: {:?}; falling back to single-pool fill",
-                    e
-                );
-                candidates[best_idx].allocated_in += remaining_in;
+
+            // If result is Err NoSolution, we just treat it as 0.
+            let target_price = candidates[equalized_pools].price;
+            let delta = match compute_delta_to_target_price(&candidates[i], target_price) {
+                Ok(delta) => {
+                    liquid_pools.insert(i);
+                    liquid_pools.insert(equalized_pools);
+                    delta
+                }
+                Err(_) => {
+                    if liquid_pools.contains(&i) {
+                        dead_pools.insert(equalized_pools);
+                    } else {
+                        dead_pools.insert(i);
+                    }
+                    U256::ZERO
+                }
+            };
+            if delta.is_zero() {
+                continue;
+            }
+
+            if remaining_in > delta {
+                remaining_in -= delta;
+                candidates[i].allocated_in += delta;
+                if candidates[i].token0_is_input {
+                    candidates[i].reserve0 += delta;
+                    candidates[i].reserve1 = find_reserve1_for_reserve0(
+                        &candidates[i].snapshot.params,
+                        candidates[i].reserve0,
+                    )?;
+                } else {
+                    candidates[i].reserve1 += delta;
+                    candidates[i].reserve0 = find_reserve0_for_reserve1(
+                        &candidates[i].snapshot.params,
+                        candidates[i].reserve1,
+                    )?;
+                }
+            } else {
+                candidates[i].allocated_in += remaining_in;
+                if candidates[i].token0_is_input {
+                    candidates[i].reserve0 += remaining_in;
+                    candidates[i].reserve1 = find_reserve1_for_reserve0(
+                        &candidates[i].snapshot.params,
+                        candidates[i].reserve0,
+                    )?;
+                } else {
+                    candidates[i].reserve1 += remaining_in;
+                    candidates[i].reserve0 = find_reserve0_for_reserve1(
+                        &candidates[i].snapshot.params,
+                        candidates[i].reserve1,
+                    )?;
+                }
                 remaining_in = U256::ZERO;
             }
+            candidates[i].price = get_current_price(
+                &candidates[i].snapshot.params,
+                candidates[i].reserve0,
+                candidates[i].reserve1,
+            )?;
+        }
+        equalized_pools += 1;
+    }
+
+    // Chunk-filling if there is remaining input
+    if remaining_in > U256::ZERO {
+        let mut liquid_pools_vec: Vec<usize> = Vec::from_iter(liquid_pools);
+        liquid_pools_vec.sort_by(|&a, &b| {
+            let a_output_reserve = if candidates[a].token0_is_input {
+                candidates[a].reserve1
+            } else {
+                candidates[a].reserve0
+            };
+            let b_output_reserve = if candidates[b].token0_is_input {
+                candidates[b].reserve1
+            } else {
+                candidates[b].reserve0
+            };
+            b_output_reserve.cmp(&a_output_reserve)
+        });
+
+        // Distribute remaining input in 1% chunks
+        let one_percent = remaining_in / U256::from(100);
+        let min_chunk = if one_percent.is_zero() {
+            remaining_in
+        } else {
+            one_percent
+        };
+
+        while remaining_in > U256::ZERO && !liquid_pools_vec.is_empty() {
+            let chunk = if remaining_in >= min_chunk {
+                min_chunk
+            } else {
+                remaining_in
+            };
+
+            let mut max_out = U256::ZERO;
+            let mut max_out_pool = 0;
+            for &i in &liquid_pools_vec {
+                let out = compute_quote(
+                    &candidates[i].snapshot.params,
+                    candidates[i].reserve0 + chunk,
+                    candidates[i].reserve1,
+                    chunk,
+                    true,
+                    candidates[i].token0_is_input,
+                )?;
+                if out > max_out {
+                    max_out = out;
+                    max_out_pool = i;
+                }
+            }
+
+            candidates[max_out_pool].allocated_in += chunk;
+            remaining_in -= chunk;
+            if candidates[max_out_pool].token0_is_input {
+                candidates[max_out_pool].reserve0 += chunk;
+                candidates[max_out_pool].reserve1 = find_reserve1_for_reserve0(
+                    &candidates[max_out_pool].snapshot.params,
+                    candidates[max_out_pool].reserve0,
+                )?;
+            } else {
+                candidates[max_out_pool].reserve1 += chunk;
+                candidates[max_out_pool].reserve0 = find_reserve0_for_reserve1(
+                    &candidates[max_out_pool].snapshot.params,
+                    candidates[max_out_pool].reserve1,
+                )?;
+            }
+            candidates[max_out_pool].price = get_current_price(
+                &candidates[max_out_pool].snapshot.params,
+                candidates[max_out_pool].reserve0,
+                candidates[max_out_pool].reserve1,
+            )?;
         }
     }
 
@@ -152,13 +255,13 @@ pub fn find_best_route_exact_in(
         if p.allocated_in.is_zero() {
             continue;
         }
-        let out = find_curve_point(
+        let out = compute_quote(
             &p.snapshot.params,
+            p.snapshot.reserve0,
+            p.snapshot.reserve1,
             p.allocated_in,
             true,
             p.token0_is_input,
-            p.snapshot.reserve0,
-            p.snapshot.reserve1,
         )?;
         total_out += out;
 
@@ -174,146 +277,142 @@ pub fn find_best_route_exact_in(
     })
 }
 
-/// Computes the input amount needed to lower a pool's *normalized* marginal price to `target_price`.
-fn compute_delta_to_target_price(
-    pool: &mut RoutePool,
-    target_price: U256,
-) -> Result<U256, RouteError> {
-    use crate::math::common::{ONE_E36, ceil_div};
-
-    if target_price >= pool.price {
-        return Ok(U256::ZERO); // already at or below target
-    }
-
+/// Computes the input amount needed to improve a pool's marginal price to `target_price`.
+fn compute_delta_to_target_price(pool: &RoutePool, target_price: U256) -> Result<U256, RouteError> {
     if pool.token0_is_input {
-        match get_current_reserves(&pool.snapshot.params, target_price) {
-            Ok((new_reserve0, new_reserve1)) => {
-                if new_reserve0 <= pool.reserve0 {
-                    return Err(RouteError::ComputationFailed(CurveError::NoSolution));
-                }
-
-                let delta_in = new_reserve0 - pool.reserve0;
-
-                pool.reserve0 = new_reserve0;
-                pool.reserve1 = new_reserve1;
-                pool.price = target_price;
-
-                Ok(delta_in)
-            }
-            Err(e) => Err(RouteError::ComputationFailed(e)),
+        if target_price >= pool.price {
+            return Ok(U256::ZERO);
         }
     } else {
-        let inverse_target = ceil_div(ONE_E36, target_price)?;
-
-        match get_current_reserves(&pool.snapshot.params, inverse_target) {
-            Ok((new_reserve0, new_reserve1)) => {
-                if new_reserve1 <= pool.reserve1 {
-                    return Err(RouteError::ComputationFailed(CurveError::NoSolution));
-                }
-
-                let delta_in = new_reserve1 - pool.reserve1;
-
-                pool.reserve0 = new_reserve0;
-                pool.reserve1 = new_reserve1;
-                pool.price = target_price;
-
-                Ok(delta_in)
-            }
-            Err(e) => Err(RouteError::ComputationFailed(e)),
+        if target_price <= pool.price {
+            return Ok(U256::ZERO);
         }
     }
+
+    let (reserve0, reserve1) = get_current_reserves(&pool.snapshot.params, target_price)?;
+
+    let delta_in = if pool.token0_is_input {
+        reserve0 - pool.reserve0
+    } else {
+        reserve1 - pool.reserve1
+    };
+
+    Ok(delta_in)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::common::ONE_E18;
-    use crate::math::curve::{EulerSwapParams, get_current_price};
-    use alloy_primitives::{Address, aliases::U112};
+    use crate::math::common::ONE_E6;
+    use crate::math::curve::EulerSwapParams;
+    use alloy_primitives::{address, uint};
 
-    fn create_test_params() -> EulerSwapParams {
-        let eq_reserve = U256::from(100) * ONE_E18;
-        let limbs = eq_reserve.into_limbs();
-        let eq_reserve_u112 = U112::from_limbs([limbs[0], limbs[1]]);
-
-        EulerSwapParams {
-            vault0: Address::ZERO,
-            vault1: Address::ZERO,
-            euler_account: Address::ZERO,
-            equilibrium_reserve0: eq_reserve_u112,
-            equilibrium_reserve1: eq_reserve_u112,
-            price_x: ONE_E18,
-            price_y: ONE_E18,
-            concentration_x: ONE_E18 / U256::from(2), // 0.5
-            concentration_y: ONE_E18 / U256::from(2), // 0.5
-            fee: U256::ZERO,
-            protocol_fee: U256::ZERO,
-            protocol_fee_recipient: Address::ZERO,
-        }
+    fn create_test_pools() -> Vec<PoolSnapshot> {
+        vec![
+            PoolSnapshot {
+                pool_address: address!("0x97711bc4e7Ebc1b1d691D54F3769A23544D9a8a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+                reserve0: uint!(7222788990895_U256),
+                reserve1: uint!(3552937153382_U256),
+                params: EulerSwapParams {
+                    concentration_x: uint!(999000000000000100_U256),
+                    concentration_y: uint!(999000000000000100_U256),
+                    equilibrium_reserve0: uint!(7882338570209_U112),
+                    equilibrium_reserve1: uint!(2893638536189_U112),
+                    euler_account: address!("0x6fDBA16De9C131EF581069E02507c512A5574DbD"),
+                    fee: uint!(50000000000000_U256),
+                    price_x: uint!(1000000_U256),
+                    price_y: uint!(1000472_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x96C68a406187f8C86DEA6b3c6150ad5A176128A8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+                reserve0: uint!(7517178463564_U256),
+                reserve1: uint!(28735470974821_U256),
+                params: EulerSwapParams {
+                    concentration_x: uint!(999950000000000000_U256),
+                    concentration_y: uint!(999950000000000000_U256),
+                    equilibrium_reserve0: uint!(18725660339732_U112),
+                    equilibrium_reserve1: uint!(17532270426334_U112),
+                    euler_account: address!("0x6fDBa16dE9C131eF581069E02507c512a5574DBf"),
+                    fee: uint!(10000000000000_U256),
+                    price_x: uint!(1000000_U256),
+                    price_y: uint!(1000546_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x83A04dE9f9BdcE80E5F83d7fB830741daA2D28a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+                reserve0: uint!(0_U256),
+                reserve1: uint!(8924_U256),
+                params: EulerSwapParams {
+                    concentration_x: uint!(690000000000000000_U256),
+                    concentration_y: uint!(900000000000000000_U256),
+                    equilibrium_reserve0: uint!(0_U112),
+                    equilibrium_reserve1: uint!(8924_U112),
+                    euler_account: address!("0x8cABEDFE7A52D73F8840e7eA9d50ad74cfCdFC8e"),
+                    fee: uint!(1000000000000000_U256),
+                    price_x: uint!(1000136039999999872_U256),
+                    price_y: uint!(999934470000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                    vault0: address!("0x2888F098157162EC4a4274F7ad2c69921e95834D"),
+                    vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x7615160EDf1b4e2791A88C1012F0fA83e51B28a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+                reserve0: uint!(1930394388_U256),
+                reserve1: uint!(35252595_U256),
+                params: EulerSwapParams {
+                    concentration_x: uint!(900000000000000000_U256),
+                    concentration_y: uint!(900000000000000000_U256),
+                    equilibrium_reserve0: uint!(1309048315_U112),
+                    equilibrium_reserve1: uint!(359033607_U112),
+                    euler_account: address!("0x7eA194FF26a2264d5C58e94C8aaC76569c999741"),
+                    fee: uint!(10000000000000_U256),
+                    price_x: uint!(1000000_U256),
+                    price_y: uint!(1000298_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+                },
+            },
+        ]
     }
 
     #[test]
-    fn test_compute_delta_to_target_price() {
-        let params = create_test_params();
-        let snapshot = PoolSnapshot {
-            pool_address: Address::ZERO,
-            token0: Address::ZERO,
-            token1: Address::ZERO,
-            reserve0: U256::from(80) * ONE_E18,
-            reserve1: U256::from(120) * ONE_E18,
-            params: params.clone(),
-        };
-
-        let mut pool_state = RoutePool {
-            snapshot,
-            reserve0: U256::from(80) * ONE_E18,
-            reserve1: U256::from(120) * ONE_E18,
-            price: get_current_price(&params, U256::from(80) * ONE_E18, U256::from(120) * ONE_E18)
-                .unwrap(),
-            allocated_in: U256::ZERO,
-            token0_is_input: true,
-        };
-        let initial_price = pool_state.price;
-
-        // Target a slightly lower price (which requires adding token0)
-        let target_price = initial_price - (initial_price / U256::from(10)); // 90% of current
-
-        match compute_delta_to_target_price(&mut pool_state, target_price) {
-            Ok(delta) => {
-                assert!(delta > U256::ZERO);
-                assert_eq!(pool_state.price, target_price);
-                assert!(pool_state.reserve0 > U256::from(80) * ONE_E18);
-            }
-            Err(_) => {
-                panic!("[test_compute_delta_to_target_price] compute_delta_to_target_price failed");
-            }
-        }
-    }
-
-    #[test]
-    fn test_find_best_route_single_pool() {
-        let params = create_test_params();
-        let pools = vec![PoolSnapshot {
-            pool_address: Address::ZERO,
-            token0: Address::from([1u8; 20]),
-            token1: Address::from([2u8; 20]),
-            reserve0: U256::from(80) * ONE_E18,
-            reserve1: U256::from(120) * ONE_E18,
-            params,
-        }];
+    fn test_find_best_route_exact_in() {
+        let pools = create_test_pools();
 
         let request = ExactInSwapRequest {
-            token_in: Address::from([1u8; 20]),
-            token_out: Address::from([2u8; 20]),
-            amount_in: U256::from(10) * ONE_E18,
-            max_splits: 1,
+            // USDC
+            token_in: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+            // USDT
+            token_out: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+            amount_in: U256::from(10000000) * ONE_E6,
         };
 
         let result = find_best_route_exact_in(&pools, &request).unwrap();
 
-        assert_eq!(result.allocations.len(), 1);
-        assert_eq!(result.allocations[0].amount_in, U256::from(10) * ONE_E18);
-        assert!(result.total_out > U256::ZERO);
+        assert_eq!(result.allocations.len(), 2);
+        assert!(result.total_out > U256::from(9900000) * ONE_E6);
+        assert!(result.total_out < U256::from(10100000) * ONE_E6);
     }
 }
 
