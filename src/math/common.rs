@@ -1,6 +1,8 @@
 use alloy_primitives::{U256, U512, uint};
 use serde::{Deserialize, Serialize};
 
+pub const ONE_E6: U256 = uint!(1000000_U256);
+pub const ONE_E15: U256 = uint!(1000000000000000_U256);
 pub const ONE_E18: U256 = uint!(1000000000000000000_U256);
 pub const ONE_E27: U256 = uint!(1000000000000000000000000000_U256);
 pub const ONE_E9: U256 = uint!(1000000000_U256);

@@ -1,7 +1,8 @@
 use crate::math::common::{
-    MathError, ONE_E9, ONE_E18, ONE_E27, ONE_E36, ONE_E54, U248_MAX, ceil_div, delta_ratio,
-    mul_div_ceil, sqrt_ceil,
+    MathError, ONE_E9, ONE_E15, ONE_E18, ONE_E27, ONE_E36, ONE_E54, U248_MAX, ceil_div,
+    delta_ratio, mul_div_ceil, sqrt_ceil,
 };
+use crate::math::quote::find_reserve1_for_reserve0;
 use alloy_primitives::{Address, I256, U256, aliases::U112};
 use serde::{Deserialize, Serialize};
 
@@ -22,11 +23,12 @@ pub struct EulerSwapParams {
     pub protocol_fee_recipient: Address,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum CurveError {
     Math(MathError),
     PriceBelowApex,
     NoSolution,
+    SwapLimitExceeded,
 }
 
 impl From<MathError> for CurveError {
@@ -259,85 +261,66 @@ pub fn get_current_reserves(
     p: &EulerSwapParams,
     current_price: U256,
 ) -> Result<(U256, U256), CurveError> {
-    let px = p.price_x;
-    let py = p.price_y;
     let x0 = U256::from(p.equilibrium_reserve0);
     let y0 = U256::from(p.equilibrium_reserve1);
-    let cx = p.concentration_x;
-    let cy = p.concentration_y;
 
-    let apex_price = mul_div_ceil(px, ONE_E18, py)?;
-    if current_price < apex_price {
-        return Err(CurveError::PriceBelowApex);
-    }
+    let apex_price = mul_div_ceil(p.price_x, ONE_E18, p.price_y)?;
     if current_price == apex_price {
         return Ok((x0, y0));
     }
 
-    // Binary-search helper for monotonically *decreasing* function on [lo,hi].
-    let search_left = || -> Result<Option<(U256, U256)>, CurveError> {
-        let mut lo = U256::from(1);
-        let mut hi = x0;
+    if current_price > apex_price {
+        let mut lo = if x0.is_zero() { U256::ZERO } else { U256::ONE };
+        let mut hi = if x0.is_zero() {
+            U256::ZERO
+        } else {
+            x0 - U256::ONE
+        };
+
         while lo <= hi {
-            let mid = (lo + hi) >> 1;
-            let y = f(mid, px, py, x0, y0, cx)?;
-            let price = get_current_price(p, mid, y)?;
-            if price == current_price {
-                return Ok(Some((mid, y)));
+            let reserve0 = (lo + hi) >> 1;
+            let reserve1 = find_reserve1_for_reserve0(p, reserve0)?;
+            let price = get_current_price(p, reserve0, reserve1)?;
+
+            let delta = delta_ratio(current_price, price, ONE_E15)?;
+            if delta == U256::ZERO {
+                return Ok((reserve0, reserve1));
             }
             if price > current_price {
-                lo = mid + U256::from(1);
+                lo = reserve0 + U256::ONE;
             } else {
-                hi = mid - U256::from(1);
+                if reserve0.is_zero() {
+                    break;
+                }
+                hi = reserve0 - U256::ONE;
             }
         }
-        Ok(None)
-    };
+    }
 
-    // Binary-search helper for monotonically *increasing* function on [lo,hi].
-    let search_right = || -> Result<Option<(U256, U256)>, CurveError> {
-        let mut lo = y0;
-        let mut hi = y0;
-
-        loop {
-            if hi.is_zero() {
-                hi = U256::ONE;
-            }
-            let x_at_hi = f(hi, py, px, y0, x0, cy)?;
-            let price = get_current_price(p, x_at_hi, hi)?;
-            if price >= current_price {
-                break;
-            }
-            hi <<= 1;
-        }
+    if current_price < apex_price {
+        let mut lo = x0 + U256::ONE;
+        let mut hi = U256::from(U112::MAX);
 
         while lo <= hi {
-            let mid: U256 = (lo + hi) >> 1;
-            if mid.is_zero() {
-                lo = U256::from(1);
-                continue;
-            }
-            let x = f(mid, py, px, y0, x0, cy)?;
-            let price = get_current_price(p, x, mid)?;
-            if price == current_price {
-                return Ok(Some((x, mid)));
+            let reserve0 = (lo + hi) >> 1;
+            let reserve1 = find_reserve1_for_reserve0(p, reserve0)?;
+            let price = get_current_price(p, reserve0, reserve1)?;
+
+            let delta = delta_ratio(current_price, price, ONE_E15)?;
+            if delta == U256::ZERO {
+                return Ok((reserve0, reserve1));
             }
             if price < current_price {
-                lo = mid + U256::from(1);
+                lo = reserve0 + U256::ONE;
             } else {
-                hi = mid - U256::from(1);
+                if reserve0 == x0 + U256::ONE {
+                    break;
+                }
+                hi = reserve0 - U256::ONE;
             }
         }
-        Ok(None)
-    };
+    }
 
-    // Try left first (smaller numerical range – faster)
-    if let Some(reserves) = search_left()? {
-        return Ok(reserves);
-    }
-    if let Some(reserves) = search_right()? {
-        return Ok(reserves);
-    }
     Err(CurveError::NoSolution)
 }
 
@@ -347,94 +330,72 @@ pub fn get_current_reserves_ray(
     p: &EulerSwapParams,
     current_price_ray: U256,
 ) -> Result<(U256, U256), CurveError> {
-    let px = p.price_x;
-    let py = p.price_y;
     let x0 = U256::from(p.equilibrium_reserve0);
     let y0 = U256::from(p.equilibrium_reserve1);
-    let cx = p.concentration_x;
-    let cy = p.concentration_y;
 
-    let apex_price = mul_div_ceil(px, ONE_E27, py)?;
-    if current_price_ray < apex_price {
-        return Err(CurveError::PriceBelowApex);
-    }
+    let apex_price = mul_div_ceil(p.price_x, ONE_E27, p.price_y)?;
     if current_price_ray == apex_price {
         return Ok((x0, y0));
     }
 
-    let search_left = || -> Result<Option<(U256, U256)>, CurveError> {
-        let mut lo = U256::from(1);
-        let mut hi = x0;
+    if current_price_ray > apex_price {
+        let mut lo = if x0.is_zero() { U256::ZERO } else { U256::ONE };
+        let mut hi = if x0.is_zero() {
+            U256::ZERO
+        } else {
+            x0 - U256::ONE
+        };
+
         while lo <= hi {
-            let mid = (lo + hi) >> 1;
-            let y = f(mid, px, py, x0, y0, cx)?;
-            let price = get_current_price_ray(p, mid, y)?;
+            let reserve0 = (lo + hi) >> 1;
+            let reserve1 = find_reserve1_for_reserve0(p, reserve0)?;
+            let price = get_current_price_ray(p, reserve0, reserve1)?;
+
             // Sometimes we can't hit the exact price, so we have to exit when it's close enough.
             if delta_ratio(current_price_ray, price, ONE_E18)? == U256::ZERO {
-                return Ok(Some((mid, y)));
+                return Ok((reserve0, reserve1));
             }
             if price > current_price_ray {
-                lo = mid + U256::from(1);
+                lo = reserve0 + U256::ONE;
             } else {
-                hi = mid - U256::from(1);
+                if reserve0.is_zero() {
+                    break;
+                }
+                hi = reserve0 - U256::ONE;
             }
         }
-        Ok(None)
-    };
+    }
 
-    // Binary-search helper for monotonically *increasing* function on [lo,hi].
-    let search_right = || -> Result<Option<(U256, U256)>, CurveError> {
-        let mut lo = y0;
-        let mut hi = y0;
-
-        loop {
-            if hi.is_zero() {
-                hi = U256::ONE;
-            }
-            let x_at_hi = f(hi, py, px, y0, x0, cy)?;
-            let price = get_current_price_ray(p, x_at_hi, hi)?;
-            if price > current_price_ray
-                || delta_ratio(current_price_ray, price, ONE_E18)? == U256::ZERO
-            {
-                break;
-            }
-            hi <<= 1;
-        }
+    if current_price_ray < apex_price {
+        let mut lo = x0 + U256::ONE;
+        let mut hi = U256::from(U112::MAX);
 
         while lo <= hi {
-            let mid: U256 = (lo + hi) >> 1;
-            if mid.is_zero() {
-                lo = U256::from(1);
-                continue;
-            }
-            let x = f(mid, py, px, y0, x0, cy)?;
-            let price = get_current_price_ray(p, x, mid)?;
+            let reserve0 = (lo + hi) >> 1;
+            let reserve1 = find_reserve1_for_reserve0(p, reserve0)?;
+            let price = get_current_price_ray(p, reserve0, reserve1)?;
+
             if delta_ratio(current_price_ray, price, ONE_E18)? == U256::ZERO {
-                return Ok(Some((x, mid)));
+                return Ok((reserve0, reserve1));
             }
             if price < current_price_ray {
-                lo = mid + U256::from(1);
+                lo = reserve0 + U256::ONE;
             } else {
-                hi = mid - U256::from(1);
+                if reserve0 == x0 + U256::ONE {
+                    break;
+                }
+                hi = reserve0 - U256::ONE;
             }
         }
-        Ok(None)
-    };
+    }
 
-    if let Some(reserves) = search_left()? {
-        return Ok(reserves);
-    }
-    if let Some(reserves) = search_right()? {
-        return Ok(reserves);
-    }
     Err(CurveError::NoSolution)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::math::common::{ONE_E18, ONE_E27, ONE_E54};
-    use alloy_primitives::{U256, uint};
+    use alloy_primitives::{address, uint};
     use std::str::FromStr;
 
     #[test]
@@ -711,5 +672,175 @@ mod tests {
         let expected_price_eq_right =
             mul_div_ceil(params.price_y, ONE_E27, params.price_x).unwrap();
         assert_eq!(price_eq_right, expected_price_eq_right);
+    }
+
+    #[test]
+    fn test_curve_more_reserve0() {
+        let params = EulerSwapParams {
+            vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+            vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+            euler_account: address!("0x6fDBA16De9C131EF581069E02507c512A5574DbD"),
+            equilibrium_reserve0: U112::from(7882338570209u128),
+            equilibrium_reserve1: U112::from(2893638536189u128),
+            price_x: U256::from(1000000u128),
+            price_y: U256::from(1000472u128),
+            concentration_x: U256::from(999000000000000100u128),
+            concentration_y: U256::from(999000000000000100u128),
+            fee: U256::from(50000000000000u128),
+            protocol_fee: U256::from(0u128),
+            protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+        };
+
+        let reserve0 = U256::from(7222790500820u128);
+        let reserve1 = U256::from(3552935643880u128);
+
+        let is_valid = verify(&params, reserve0, reserve1).unwrap();
+        assert!(is_valid, "The given reserves should be valid for the curve");
+
+        // Test get_current_price
+        let current_price = get_current_price(&params, reserve0, reserve1).unwrap();
+        assert!(
+            current_price > U256::ZERO,
+            "Current price should be positive"
+        );
+
+        // Test get_current_price_ray
+        let current_price_ray = get_current_price_ray(&params, reserve0, reserve1).unwrap();
+        assert!(
+            current_price_ray > U256::ZERO,
+            "Current price in RAY should be positive"
+        );
+
+        // Test the roundtrip
+        let (reserve0_roundtrip, reserve1_roundtrip) =
+            get_current_reserves(&params, current_price).unwrap();
+        assert_eq!(reserve0, reserve0_roundtrip);
+        assert_eq!(reserve1, reserve1_roundtrip);
+
+        // Test the roundtrip in ray
+        let (reserve0_roundtrip_ray, reserve1_roundtrip_ray) =
+            get_current_reserves_ray(&params, current_price_ray).unwrap();
+        assert_eq!(reserve0, reserve0_roundtrip_ray);
+        assert_eq!(reserve1, reserve1_roundtrip_ray);
+    }
+
+    #[test]
+    fn test_curve_more_reserve1() {
+        let params = EulerSwapParams {
+            vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+            vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+            euler_account: address!("0x6fDBA16De9C131EF581069E02507c512A5574DbD"),
+            equilibrium_reserve0: U112::from(7882338570209u128),
+            equilibrium_reserve1: U112::from(2893638536189u128),
+            price_x: U256::from(1000000u128),
+            price_y: U256::from(1000472u128),
+            concentration_x: U256::from(999000000000000100u128),
+            concentration_y: U256::from(999000000000000100u128),
+            fee: U256::from(50000000000000u128),
+            protocol_fee: U256::from(0u128),
+            protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+        };
+
+        let reserve0 = U256::from(3552935643880u128);
+        let reserve1 = U256::from(7226272020790u128);
+
+        // Test verify function
+        let is_valid = verify(&params, reserve0, reserve1).unwrap();
+        assert!(is_valid, "The given reserves should be valid for the curve");
+
+        // Test get_current_price
+        let current_price = get_current_price(&params, reserve0, reserve1).unwrap();
+        assert!(
+            current_price > U256::ZERO,
+            "Current price should be positive"
+        );
+
+        // Test get_current_price_ray
+        let current_price_ray = get_current_price_ray(&params, reserve0, reserve1).unwrap();
+        assert!(
+            current_price_ray > U256::ZERO,
+            "Current price in RAY should be positive"
+        );
+
+        // Test the roundtrip
+        let (reserve0_roundtrip, reserve1_roundtrip) =
+            get_current_reserves(&params, current_price).unwrap();
+        assert_eq!(reserve0, reserve0_roundtrip);
+        assert_eq!(reserve1, reserve1_roundtrip);
+
+        // Test the roundtrip in ray
+        let (reserve0_roundtrip_ray, reserve1_roundtrip_ray) =
+            get_current_reserves_ray(&params, current_price_ray).unwrap();
+        assert_eq!(reserve0, reserve0_roundtrip_ray);
+        assert_eq!(reserve1, reserve1_roundtrip_ray);
+    }
+
+    #[test]
+    fn test_get_current_reserves_1() {
+        let params = EulerSwapParams {
+            vault0: address!("0x6eae95ee783e4d862867c4e0e4c3f4b95aa682ba"),
+            vault1: address!("0xd49181c522ecdb265f0d9c175cf26fface64ead3"),
+            euler_account: address!("0x6fdba16de9c131ef581069e02507c512a5574dbd"),
+            equilibrium_reserve0: uint!(7882338570209_U112),
+            equilibrium_reserve1: uint!(2893638536189_U112),
+            price_x: uint!(1000000_U256),
+            price_y: uint!(1000472_U256),
+            concentration_x: uint!(999000000000000100_U256),
+            concentration_y: uint!(999000000000000100_U256),
+            fee: uint!(50000000000000_U256),
+            protocol_fee: uint!(0_U256),
+            protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+        };
+
+        let current_price = uint!(999714422196255613_U256);
+        let (reserve0, reserve1) = get_current_reserves(&params, current_price).unwrap();
+        assert_eq!(reserve0, uint!(7237025880666_U256));
+        assert_eq!(reserve1, uint!(3538704296075_U256));
+    }
+
+    #[test]
+    fn test_get_current_reserves_2() {
+        let params = EulerSwapParams {
+            concentration_x: uint!(690000000000000000_U256),
+            concentration_y: uint!(900000000000000000_U256),
+            equilibrium_reserve0: uint!(0_U112),
+            equilibrium_reserve1: uint!(8924_U112),
+            euler_account: address!("0x8cABEDFE7A52D73F8840e7eA9d50ad74cfCdFC8e"),
+            fee: uint!(1000000000000000_U256),
+            price_x: uint!(1000136039999999872_U256),
+            price_y: uint!(999934470000000000_U256),
+            protocol_fee: uint!(0_U256),
+            protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+            vault0: address!("0x2888F098157162EC4a4274F7ad2c69921e95834D"),
+            vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+        };
+
+        // price too different
+        let current_price = uint!(999719101195561546_U256);
+        let result = get_current_reserves(&params, current_price);
+        assert_eq!(result, Err(CurveError::NoSolution));
+    }
+
+    #[test]
+    fn test_get_current_reserves_3() {
+        let params = EulerSwapParams {
+            vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+            vault1: address!("0xD49181c522eCDB265f0D9C175Cf26FFACE64eAD3"),
+            euler_account: address!("0x6fDBA16De9C131EF581069E02507c512A5574DbD"),
+            equilibrium_reserve0: U112::from(7882338570209u128),
+            equilibrium_reserve1: U112::from(2893638536189u128),
+            price_x: U256::from(1000000u128),
+            price_y: U256::from(1000472u128),
+            concentration_x: U256::from(999000000000000100u128),
+            concentration_y: U256::from(999000000000000100u128),
+            fee: U256::from(50000000000000u128),
+            protocol_fee: U256::from(0u128),
+            protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+        };
+
+        // price too different
+        let current_price = uint!(88684177661935620_U256);
+        let result = get_current_reserves(&params, current_price);
+        assert_eq!(result, Err(CurveError::NoSolution));
     }
 }
