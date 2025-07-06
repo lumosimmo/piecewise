@@ -178,19 +178,14 @@ pub fn find_best_route_exact_in(
 
     // Chunk-filling if there is remaining input
     if remaining_in > U256::ZERO {
-        let mut liquid_pools_vec: Vec<usize> = Vec::from_iter(liquid_pools);
-        liquid_pools_vec.sort_by(|&a, &b| {
-            let a_output_reserve = if candidates[a].token0_is_input {
-                candidates[a].reserve1
+        // Sort candidates by biggest output reserve
+        // When token0 is input, we want higher reserve1 and vice versa
+        candidates.sort_by(|a, b| {
+            if a.token0_is_input {
+                b.reserve1.cmp(&a.reserve1)
             } else {
-                candidates[a].reserve0
-            };
-            let b_output_reserve = if candidates[b].token0_is_input {
-                candidates[b].reserve1
-            } else {
-                candidates[b].reserve0
-            };
-            b_output_reserve.cmp(&a_output_reserve)
+                a.reserve1.cmp(&b.reserve1)
+            }
         });
 
         // Distribute remaining input in 1% chunks
@@ -201,7 +196,7 @@ pub fn find_best_route_exact_in(
             one_percent
         };
 
-        while remaining_in > U256::ZERO && !liquid_pools_vec.is_empty() {
+        while remaining_in > U256::ZERO {
             let chunk = if remaining_in >= min_chunk {
                 min_chunk
             } else {
@@ -210,7 +205,7 @@ pub fn find_best_route_exact_in(
 
             let mut max_out = U256::ZERO;
             let mut max_out_pool = 0;
-            for &i in &liquid_pools_vec {
+            for i in 0..candidates.len() {
                 let out = compute_quote(
                     &candidates[i].snapshot.params,
                     candidates[i].reserve0 + chunk,
@@ -401,18 +396,273 @@ mod tests {
         let pools = create_test_pools();
 
         let request = ExactInSwapRequest {
-            // USDC
-            token_in: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
             // USDT
-            token_out: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+            token_in: address!("0x9151434b16b9763660705744891fa906f660ecc5"),
+            // USDC
+            token_out: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
             amount_in: U256::from(10000000) * ONE_E6,
         };
 
         let result = find_best_route_exact_in(&pools, &request).unwrap();
 
-        assert_eq!(result.allocations.len(), 2);
+        assert_eq!(result.allocations.len(), 3);
         assert!(result.total_out > U256::from(9900000) * ONE_E6);
         assert!(result.total_out < U256::from(10100000) * ONE_E6);
+    }
+
+    fn create_test_pools_2() -> Vec<PoolSnapshot> {
+        vec![
+            PoolSnapshot {
+                pool_address: address!("0x38d285ec702d344467715ff1F482591B01AD68a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(1001459_U256),
+                reserve1: uint!(0_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0xDBd5c529E84f2a1955171578E1DB86eFF56A2884"),
+                    equilibrium_reserve0: uint!(1001459_U112),
+                    equilibrium_reserve1: uint!(0_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2761581097_U256),
+                    concentration_x: uint!(0_U256),
+                    concentration_y: uint!(0_U256),
+                    fee: uint!(500000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0xf467191a3ED4302342d3AD133D4744C81Ea228A8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(0_U256),
+                reserve1: uint!(400000003163559_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x694A225ee37B5DD67F3f15BCa7472C1Ee1918A14"),
+                    equilibrium_reserve0: uint!(0_U112),
+                    equilibrium_reserve1: uint!(400000003163559_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2575564870_U256),
+                    concentration_x: uint!(900000000000000000_U256),
+                    concentration_y: uint!(990000000000000000_U256),
+                    fee: uint!(1000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x5EC4eDf777c15655b41FB9EFd5F90541d873e8a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(12759775_U256),
+                reserve1: uint!(68627772442675472_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x8476B695C5F8313CbB6B46b5B18dA11AEd1b6BDb"),
+                    equilibrium_reserve0: uint!(188940518_U112),
+                    equilibrium_reserve1: uint!(0_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2568965422_U256),
+                    concentration_x: uint!(999950000000000000_U256),
+                    concentration_y: uint!(999950000000000000_U256),
+                    fee: uint!(10000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x903DC95DB13e221456DDC3Fb6119B8d7cC68E8a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(786028365_U256),
+                reserve1: uint!(288055812799891228_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x75102a2309cD305c7457a72397D0BcC000C4e040"),
+                    equilibrium_reserve0: uint!(786028365_U112),
+                    equilibrium_reserve1: uint!(288055812799891228_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2428441526_U256),
+                    concentration_x: uint!(0_U256),
+                    concentration_y: uint!(0_U256),
+                    fee: uint!(500000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x0802d84c163ffF54c133873eB045d7DA6CDA68A8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(802297567_U256),
+                reserve1: uint!(281582336437558876_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x75102a2309CD305c7457a72397D0Bcc000c4e042"),
+                    equilibrium_reserve0: uint!(788618385_U112),
+                    equilibrium_reserve1: uint!(287063727791972180_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2447915334_U256),
+                    concentration_x: uint!(0_U256),
+                    concentration_y: uint!(0_U256),
+                    fee: uint!(500000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x7e7eeFa399cEd60930aa0c55d13e58bFA9FB68a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(76985989_U256),
+                reserve1: uint!(19863016048953716_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x8476b695C5F8313Cbb6b46B5b18da11aed1B6BDd"),
+                    equilibrium_reserve0: uint!(67500026_U112),
+                    equilibrium_reserve1: uint!(23698581619701112_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2426306515_U256),
+                    concentration_x: uint!(900000000000000000_U256),
+                    concentration_y: uint!(900000000000000000_U256),
+                    fee: uint!(1000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x52317f38F19cD8cF0100A6268791877A16D828A8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(779879390_U256),
+                reserve1: uint!(194679249285341940_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x8476B695C5f8313CBB6b46b5b18DA11AED1B6BD9"),
+                    equilibrium_reserve0: uint!(675000121_U112),
+                    equilibrium_reserve1: uint!(236985764060152467_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2426306515_U256),
+                    concentration_x: uint!(900000000000000000_U256),
+                    concentration_y: uint!(900000000000000000_U256),
+                    fee: uint!(1000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x0dAA7a2eb668131E1B353Aaa4cb2E0CF6B66E8A8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(2000000000_U256),
+                reserve1: uint!(2000000000_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x29d5ea019FA72B489C44F15b7E95771b399D37Ef"),
+                    equilibrium_reserve0: uint!(2000000000_U112),
+                    equilibrium_reserve1: uint!(2000000000_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(1000000000000000000_U256),
+                    concentration_x: uint!(970000000000000000_U256),
+                    concentration_y: uint!(970000000000000000_U256),
+                    fee: uint!(10000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0xec078526b7a841c3f8FCD13ECC8EfC0F1E25A8a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(50317008_U256),
+                reserve1: uint!(15629487686265722_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x3e4Ab57CD1Aef2DE5D2d3b889d6f2Fc82b5Dc733"),
+                    equilibrium_reserve0: uint!(43361827_U112),
+                    equilibrium_reserve1: uint!(18427910303646597_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2441675542_U256),
+                    concentration_x: uint!(900000000000000000_U256),
+                    concentration_y: uint!(900000000000000000_U256),
+                    fee: uint!(1000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0x8Dbe9d4b9318B79c94D8C3C541e28d2cd782E8A8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(7973780_U256),
+                reserve1: uint!(1878373679314331_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x8476b695C5F8313cBB6b46B5B18Da11AED1b6BD8"),
+                    equilibrium_reserve0: uint!(6750046_U112),
+                    equilibrium_reserve1: uint!(2369873803027723_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2426306515_U256),
+                    concentration_x: uint!(900000000000000000_U256),
+                    concentration_y: uint!(900000000000000000_U256),
+                    fee: uint!(1000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+            PoolSnapshot {
+                pool_address: address!("0xcF9A7291E051D3f3070dA681c0552Fc41BFC68a8"),
+                token0: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+                token1: address!("0x4200000000000000000000000000000000000006"),
+                reserve0: uint!(5337332_U256),
+                reserve1: uint!(2584091935708467_U256),
+                params: EulerSwapParams {
+                    vault0: address!("0x6eAe95ee783e4D862867C4e0E4c3f4B95AA682Ba"),
+                    vault1: address!("0x1f3134C3f3f8AdD904B9635acBeFC0eA0D0E1ffC"),
+                    euler_account: address!("0x75102a2309cD305c7457a72397D0BCc000c4E046"),
+                    equilibrium_reserve0: uint!(5337332_U112),
+                    equilibrium_reserve1: uint!(2584091935708467_U112),
+                    price_x: uint!(1000000000000000000_U256),
+                    price_y: uint!(2424667625_U256),
+                    concentration_x: uint!(0_U256),
+                    concentration_y: uint!(0_U256),
+                    fee: uint!(1000000000000000_U256),
+                    protocol_fee: uint!(0_U256),
+                    protocol_fee_recipient: address!("0x0000000000000000000000000000000000000000"),
+                },
+            },
+        ]
+    }
+
+    #[test]
+    fn test_find_best_route_exact_in_2() {
+        let pools = create_test_pools_2();
+
+        let request = ExactInSwapRequest {
+            // USDC
+            token_in: address!("0x078d782b760474a361dda0af3839290b0ef57ad6"),
+            // WETH
+            token_out: address!("0x4200000000000000000000000000000000000006"),
+            amount_in: U256::from(1) * ONE_E6,
+        };
+
+        let result = find_best_route_exact_in(&pools, &request).unwrap();
+
+        assert_eq!(result.allocations.len(), 2);
+        assert!(result.total_out > uint!(411000000000000_U256));
+        assert!(result.total_out < uint!(412000000000000_U256));
     }
 }
 
